@@ -1,0 +1,27 @@
+input:
+  livox_topic: "/livox/lidar"
+  mmwave_topic: "/radar_enhanced_pcl"
+
+output:
+  fusion_topic: "/fusion/points"
+  livox_raw_topic: "/livox/lidar_pcl2_raw"
+  frame_id: "map"
+
+livox:
+  scan_line: 6
+  point_filter_num: 2
+
+common:
+  max_sync_dt: 0.03
+
+filter:
+  is_filter: false
+  min_range: 1.0
+  max_range: 120.0
+  voxel_leaf: 0.20
+
+extrinsic:
+  mmwave_to_livox_t: [0.0, 0.0, 0.0]
+  mmwave_to_livox_r: [1.0, 0.0, 0.0,
+                      0.0, 1.0, 0.0,
+                      0.0, 0.0, 1.0]

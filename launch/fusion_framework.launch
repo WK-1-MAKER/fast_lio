@@ -1,0 +1,10 @@
+<launch>
+  <arg name="config" default="$(find fast_lio)/config/fusion_framework.yaml" />
+
+  <rosparam command="load" file="$(arg config)" ns="radar_livox_fusion_node" />
+
+  <node pkg="fast_lio"
+        type="radar_livox_fusion_node"
+        name="radar_livox_fusion_node"
+      output="screen" />
+</launch>
