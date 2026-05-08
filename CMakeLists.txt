@@ -86,11 +86,7 @@ catkin_package(
 
 add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
 target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
-<<<<<<< HEAD
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
 add_executable(radar_livox_fusion_node src/radar_livox_fusion_node.cpp)
 target_link_libraries(radar_livox_fusion_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
-=======
-target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
->>>>>>> 7cc4175de6f8ba2edf34bab02a42195b141027e9
