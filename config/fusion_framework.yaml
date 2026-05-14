@@ -5,14 +5,48 @@ input:
 output:
   fusion_topic: "/fusion/points"
   livox_raw_topic: "/livox/lidar_pcl2_raw"
-  frame_id: "map"
+  frame_id: "livox"
 
 livox:
   scan_line: 6
   point_filter_num: 2
+  scan_duration: 0.1
 
-common:
+sync:
   max_sync_dt: 0.03
+  radar_queue_size: 50
+  stale_time: 0.20
+
+radar:
+  ring: 31
+
+smoke_adaptive:
+  enabled: true
+  enter_frames: 5
+  exit_frames: 15
+  enter_score: 0.65
+  exit_score: 0.35
+
+  range:
+    near: 8.0
+    far: 20.0
+
+  score_weights:
+    valid_count: 0.35
+    far_low_reflectivity: 0.35
+    far_isolation: 0.30
+
+  livox:
+    far_low_reflectivity: 8.0
+    min_valid_points_ratio: 0.5
+    isolated_voxel_leaf: 0.5
+    isolated_voxel_max_points: 2
+
+  radar:
+    min_power_normal: 7.0
+    min_power_smoke: 5.5
+    max_points_normal: 300
+    max_points_smoke: 1000
 
 filter:
   is_filter: false
