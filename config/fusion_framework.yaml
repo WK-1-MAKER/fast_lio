@@ -13,40 +13,43 @@ livox:
   scan_duration: 0.1
 
 sync:
-  max_sync_dt: 0.03
+  max_sync_dt: 0.06            # 同步时钟的最大时间差
+  livox_delay: 0.12            # livox点云延迟，避免livox点云过早到达导致无法与雷达点云同步
+  livox_queue_size: 20
   radar_queue_size: 50
-  stale_time: 0.20
+  stale_time: 0.20             # 比livox早超过slate_time的毫米波雷达点云将被丢弃
+  process_timer_period: 0.005
 
 radar:
   ring: 31
 
 smoke_adaptive:
   enabled: true
-  enter_frames: 5
-  exit_frames: 15
-  enter_score: 0.65
-  exit_score: 0.35
+  enter_frames: 5     # 连续5帧识别为烟雾才进入烟雾状态
+  exit_frames: 15     # 连续15帧识别为非烟雾才退出烟雾状态
+  enter_score: 0.65   # 进入烟雾状态的分数阈值，范围0-1，分数越高越严格
+  exit_score: 0.35    # 退出烟雾状态的分数阈值，范围0-1，分数越低越严格
 
   range:
-    near: 8.0
-    far: 20.0
+    near: 8.0         # 近距离范围，单位米
+    far: 20.0         # 远距离范围，单位米
 
   score_weights:
-    valid_count: 0.35
+    valid_count: 0.35            
     far_low_reflectivity: 0.35
     far_isolation: 0.30
 
   livox:
-    far_low_reflectivity: 8.0
-    min_valid_points_ratio: 0.5
-    isolated_voxel_leaf: 0.5
-    isolated_voxel_max_points: 2
+    far_low_reflectivity: 8.0       # 远距离livox低反射率阈值
+    min_valid_points_ratio: 0.5     # 最小有效点比例
+    isolated_voxel_leaf: 0.5        # 孤立体素的体素大小，单位米
+    isolated_voxel_max_points: 2    # 孤立体素内最大点数，超过则认为不是孤立点
 
   radar:
-    min_power_normal: 7.0
-    min_power_smoke: 5.5
-    max_points_normal: 300
-    max_points_smoke: 1000
+    min_power_normal: 7.0        # 正常环境毫米波雷达最小功率阈值，只取power>7.0的点
+    min_power_smoke: 5.5         # 烟雾环境毫米波雷达最小功率阈值，只取power>5.5的点
+    max_points_normal: 300       # 正常环境保留毫米波雷达最大点数
+    max_points_smoke: 1000       # 烟雾环境保留毫米波雷达最大点数
 
 filter:
   is_filter: false

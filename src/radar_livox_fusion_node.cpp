@@ -107,6 +107,12 @@ struct RadarPointCandidate
     float power = 1.0f;
 };
 
+struct DelayedLivoxFrame
+{
+    livox_ros_driver::CustomMsg::ConstPtr msg;
+    ros::WallTime received_time;
+};
+
 class RadarLivoxFusionNode
 {
 public:
@@ -123,8 +129,11 @@ public:
         nh_.param<int>("livox/point_filter_num", livox_point_filter_num_, 2);
         nh_.param<double>("livox/scan_duration", fallback_livox_scan_duration_, 0.1);
         nh_.param<double>("sync/max_sync_dt", max_sync_dt_, max_sync_dt_);
+        nh_.param<double>("sync/livox_delay", livox_delay_, livox_delay_);
+        nh_.param<int>("sync/livox_queue_size", livox_queue_size_, livox_queue_size_);
         nh_.param<int>("sync/radar_queue_size", radar_queue_size_, 50);
         nh_.param<double>("sync/stale_time", radar_stale_time_, 0.2);
+        nh_.param<double>("sync/process_timer_period", process_timer_period_, process_timer_period_);
         int radar_ring = 0;
         nh_.param<int>("radar/ring", radar_ring, 0);
         nh_.param<bool>("filter/is_filter", is_filter_, true);
@@ -150,7 +159,10 @@ public:
         nh_.param<int>("smoke_adaptive/radar/max_points_normal", smoke_cfg_.radar_max_points_normal, smoke_cfg_.radar_max_points_normal);
         nh_.param<int>("smoke_adaptive/radar/max_points_smoke", smoke_cfg_.radar_max_points_smoke, smoke_cfg_.radar_max_points_smoke);
         radar_queue_size_ = std::max(1, radar_queue_size_);
+        livox_queue_size_ = std::max(1, livox_queue_size_);
         radar_stale_time_ = std::max(max_sync_dt_, radar_stale_time_);
+        livox_delay_ = std::max(0.0, livox_delay_);
+        process_timer_period_ = std::max(0.001, process_timer_period_);
         fallback_livox_scan_duration_ = std::max(0.0, fallback_livox_scan_duration_);
         radar_ring_ = static_cast<std::uint16_t>(std::max(0, std::min(radar_ring, 65535)));
         normalizeSmokeConfig();
@@ -178,6 +190,9 @@ public:
         sub_mmwave_ = nh_.subscribe(mmwave_topic_, 50, &RadarLivoxFusionNode::mmwaveCallback, this);
         pub_fusion_ = nh_.advertise<sensor_msgs::PointCloud2>(fusion_topic_, 10);
         pub_livox_raw_ = nh_.advertise<sensor_msgs::PointCloud2>(livox_raw_topic_, 10);
+        process_timer_ = nh_.createWallTimer(ros::WallDuration(process_timer_period_),
+                                             &RadarLivoxFusionNode::processTimerCallback,
+                                             this);
 
         ROS_INFO_STREAM("radar_livox_fusion_node started.\n"
                         << "  livox_topic: " << livox_topic_ << "\n"
@@ -186,8 +201,11 @@ public:
                         << "  fusion_topic: " << fusion_topic_ << "\n"
                         << "  output_frame: " << output_frame_id_ << "\n"
                         << "  max_sync_dt: " << max_sync_dt_ << "\n"
+                        << "  livox_delay: " << livox_delay_ << "\n"
+                        << "  livox_queue_size: " << livox_queue_size_ << "\n"
                         << "  radar_queue_size: " << radar_queue_size_ << "\n"
                         << "  radar_stale_time: " << radar_stale_time_ << "\n"
+                        << "  process_timer_period: " << process_timer_period_ << "\n"
                         << "  fallback_livox_scan_duration: " << fallback_livox_scan_duration_ << "\n"
                         << "  radar_ring: " << radar_ring_ << "\n"
                         << "  range_filter: " << (is_filter_ ? "enabled" : "disabled") << "\n"
@@ -213,6 +231,50 @@ private:
     }
 
     void livoxCallback(const livox_ros_driver::CustomMsg::ConstPtr &msg)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!livox_queue_.empty() && msg->header.stamp < livox_queue_.back().msg->header.stamp)
+        {
+            ROS_WARN_THROTTLE(1.0, "Livox timestamp rollback detected, clearing Livox queue.");
+            livox_queue_.clear();
+        }
+
+        livox_queue_.push_back(DelayedLivoxFrame{msg, ros::WallTime::now()});
+        while (static_cast<int>(livox_queue_.size()) > livox_queue_size_)
+        {
+            livox_queue_.pop_front();
+            ++dropped_livox_overflow_count_;
+        }
+    }
+
+    void processTimerCallback(const ros::WallTimerEvent &)
+    {
+        while (true)
+        {
+            livox_ros_driver::CustomMsg::ConstPtr msg;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (livox_queue_.empty())
+                {
+                    return;
+                }
+
+                const double wait_time = (ros::WallTime::now() - livox_queue_.front().received_time).toSec();
+                if (wait_time < livox_delay_)
+                {
+                    return;
+                }
+
+                msg = livox_queue_.front().msg;
+                livox_queue_.pop_front();
+            }
+
+            ++processed_livox_count_;
+            processLivoxFrame(msg);
+        }
+    }
+
+    void processLivoxFrame(const livox_ros_driver::CustomMsg::ConstPtr &msg)
     {
         CloudXYZI::Ptr livox_raw_cloud(new CloudXYZI());
         CloudXYZIRT::Ptr fused_cloud(new CloudXYZIRT());
@@ -313,12 +375,16 @@ private:
         sensor_msgs::PointCloud::ConstPtr best_msg = *best_it;
         radar_queue_.erase(best_it);
         ++matched_count_;
-        ROS_INFO_THROTTLE(2.0, "Matched radar frame with dt %.6f s. matched=%llu livox_only=%llu stale_drop=%llu overflow_drop=%llu",
+        ROS_INFO_THROTTLE(2.0,
+                          "Matched radar frame with dt %.6f s. processed_livox=%llu matched=%llu livox_only=%llu "
+                          "stale_drop=%llu radar_overflow_drop=%llu livox_overflow_drop=%llu",
                           best_dt,
+                          static_cast<unsigned long long>(processed_livox_count_),
                           static_cast<unsigned long long>(matched_count_),
                           static_cast<unsigned long long>(livox_only_count_),
                           static_cast<unsigned long long>(dropped_stale_count_),
-                          static_cast<unsigned long long>(dropped_overflow_count_));
+                          static_cast<unsigned long long>(dropped_overflow_count_),
+                          static_cast<unsigned long long>(dropped_livox_overflow_count_));
         return best_msg;
     }
 
@@ -673,7 +739,7 @@ private:
             return;
         }
 
-        ROS_INFO_THROTTLE(2.0,
+        /* ROS_INFO_THROTTLE(2.0,
                           "smoke_adaptive mode=%s score=%.3f components(valid=%.3f refl=%.3f isolated=%.3f) "
                           "livox(valid=%zu base=%.1f far=%zu far_low_ratio=%.3f far_iso_ratio=%.3f after=%zu) "
                           "radar(before=%zu after=%zu)",
@@ -689,7 +755,7 @@ private:
                           quality.far_isolated_voxel_ratio,
                           quality.livox_points_after,
                           quality.radar_points_before,
-                          quality.radar_points_after);
+                          quality.radar_points_after); */
     }
 
     std::string modeName(const EnvironmentMode mode) const
@@ -780,6 +846,7 @@ private:
     ros::Subscriber sub_mmwave_;
     ros::Publisher pub_fusion_;
     ros::Publisher pub_livox_raw_;
+    ros::WallTimer process_timer_;
 
     std::string livox_topic_;
     std::string mmwave_topic_;
@@ -791,8 +858,11 @@ private:
     int livox_point_filter_num_ = 2;
     double fallback_livox_scan_duration_ = 0.1;
     double max_sync_dt_ = 0.03;
+    double livox_delay_ = 0.08;
+    int livox_queue_size_ = 20;
     int radar_queue_size_ = 50;
     double radar_stale_time_ = 0.2;
+    double process_timer_period_ = 0.005;
     std::uint16_t radar_ring_ = 0;
     bool is_filter_ = true;
     double min_range_ = 1.0;
@@ -808,11 +878,14 @@ private:
     Eigen::Vector3d t_m2l_ = Eigen::Vector3d::Zero();
 
     std::mutex mutex_;
+    std::deque<DelayedLivoxFrame> livox_queue_;
     std::deque<sensor_msgs::PointCloud::ConstPtr> radar_queue_;
+    uint64_t processed_livox_count_ = 0;
     uint64_t matched_count_ = 0;
     uint64_t livox_only_count_ = 0;
     uint64_t dropped_stale_count_ = 0;
     uint64_t dropped_overflow_count_ = 0;
+    uint64_t dropped_livox_overflow_count_ = 0;
 };
 }
 

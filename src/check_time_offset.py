@@ -18,6 +18,12 @@ def parse_args():
     parser.add_argument("--max-lag", type=int, default=5)
     parser.add_argument("--report-period", type=float, default=2.0)
     parser.add_argument("--fixed-std-threshold", type=float, default=0.02)
+    parser.add_argument(
+        "--gap-threshold",
+        type=float,
+        default=0.2,
+        help="Header stamp gap threshold in seconds for detecting stream dropouts.",
+    )
     return parser.parse_args(rospy.myargv()[1:])
 
 
@@ -65,6 +71,52 @@ def format_summary(name, summary):
     )
 
 
+def consecutive_intervals(stamps):
+    stamps_sorted = sorted(stamps)
+    return [
+        stamps_sorted[i] - stamps_sorted[i - 1]
+        for i in range(1, len(stamps_sorted))
+    ]
+
+
+def format_period_summary(name, stamps, gap_threshold):
+    intervals = consecutive_intervals(stamps)
+    summary = summarize(intervals)
+    if summary is None:
+        return "{} period: no data".format(name)
+
+    gaps = [value for value in intervals if value > gap_threshold]
+    line = (
+        "{} period: n={} mean={:.6f}s median={:.6f}s std={:.6f}s "
+        "min={:.6f}s max={:.6f}s gaps>{:.3f}s={}"
+    ).format(
+        name,
+        summary["count"],
+        summary["mean"],
+        summary["median"],
+        summary["std"],
+        summary["min"],
+        summary["max"],
+        gap_threshold,
+        len(gaps),
+    )
+    if gaps:
+        line += " largest_gaps=" + ",".join(
+            "{:.3f}".format(value) for value in sorted(gaps, reverse=True)[:5]
+        )
+    return line
+
+
+def overlap_window(livox, radar):
+    if not livox or not radar:
+        return None
+    start = max(livox[0], radar[0])
+    end = min(livox[-1], radar[-1])
+    if start > end:
+        return None
+    return start, end
+
+
 class OffsetEstimator:
     def __init__(self, args):
         self.args = args
@@ -107,12 +159,35 @@ class OffsetEstimator:
 
         livox_sorted = sorted(livox)
         radar_sorted = sorted(radar)
+        overlap = overlap_window(livox_sorted, radar_sorted)
         best_lag, best_values, best_summary = self._best_lag_summary(
             livox_sorted, radar_sorted
         )
-        nearest_summary = summarize(self._nearest_deltas(livox_sorted, radar_sorted))
+        nearest_all_summary = summarize(self._nearest_deltas(livox_sorted, radar_sorted))
+        nearest_overlap_values, overlap_info = self._nearest_overlap_deltas(
+            livox_sorted, radar_sorted, overlap
+        )
+        nearest_overlap_summary = summarize(nearest_overlap_values)
+        livox_period_line = format_period_summary(
+            "livox", livox_sorted, self.args.gap_threshold
+        )
+        radar_period_line = format_period_summary(
+            "radar", radar_sorted, self.args.gap_threshold
+        )
 
-        rospy.loginfo("\n%s\n%s", "-" * 72, self._format_report(best_lag, best_summary, nearest_summary))
+        rospy.loginfo(
+            "\n%s\n%s",
+            "-" * 72,
+            self._format_report(
+                best_lag,
+                best_summary,
+                nearest_all_summary,
+                nearest_overlap_summary,
+                overlap_info,
+                livox_period_line,
+                radar_period_line,
+            ),
+        )
 
     def _best_lag_summary(self, livox, radar):
         best_lag = 0
@@ -150,7 +225,38 @@ class OffsetEstimator:
                 values.append(nearest - livox_stamp)
         return values
 
-    def _format_report(self, best_lag, best_summary, nearest_summary):
+    def _nearest_overlap_deltas(self, livox, radar, overlap):
+        if overlap is None:
+            return [], "overlap: none"
+
+        start, end = overlap
+        livox_overlap = [stamp for stamp in livox if start <= stamp <= end]
+        radar_overlap = [stamp for stamp in radar if start <= stamp <= end]
+        values = self._nearest_deltas(livox_overlap, radar_overlap)
+        overlap_info = (
+            "overlap: start={:.6f} end={:.6f} duration={:.3f}s "
+            "livox_used={}/{} radar_used={}/{}"
+        ).format(
+            start,
+            end,
+            end - start,
+            len(livox_overlap),
+            len(livox),
+            len(radar_overlap),
+            len(radar),
+        )
+        return values, overlap_info
+
+    def _format_report(
+        self,
+        best_lag,
+        best_summary,
+        nearest_all_summary,
+        nearest_overlap_summary,
+        overlap_info,
+        livox_period_line,
+        radar_period_line,
+    ):
         if best_summary is None:
             return "not enough paired samples"
 
@@ -162,11 +268,15 @@ class OffsetEstimator:
             ),
             format_summary("index/lag aligned dt = radar_stamp - livox_stamp", best_summary),
             "best_lag: radar_index = livox_index + {}".format(best_lag),
-            format_summary("nearest-frame dt = radar_stamp - livox_stamp", nearest_summary),
+            format_summary("nearest-frame all dt = radar_stamp - livox_stamp", nearest_all_summary),
+            overlap_info,
+            format_summary("nearest-frame overlap dt = radar_stamp - livox_stamp", nearest_overlap_summary),
             "fixed_offset_like: {} (std threshold {:.3f}s)".format(
                 "YES" if fixed else "NO", self.args.fixed_std_threshold
             ),
             "suggested sync/radar_time_offset: {:+.6f}s".format(suggested_offset),
+            livox_period_line,
+            radar_period_line,
         ]
         return "\n".join(lines)
 
