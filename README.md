@@ -233,6 +233,26 @@ Set ``` pcd_save_enable ``` in launchfile to ``` 1 ```. All the scans (in global
     5 is intensity
 ```
 
+### 3.6 IMU 去畸变点云话题
+
+mapping 节点发布 `/cloud_undistorted`（`sensor_msgs/PointCloud2`），供下游订阅。使用
+`mapping_lidar_radar_fusion.launch` 时，输入来自 `/fusion/points`，输出的
+`header.frame_id` 原样保留输入值（默认 frame_id 为 `livox`），`header.stamp` 使用
+本帧扫描结束时间 `lidar_end_time`，与同帧 `/Odometry` 的时间戳完全一致。
+
+输出是现有预处理过滤、IMU 去畸变之后，地图体素降采样之前的点云，包含
+`x/y/z/intensity`，以及内部 PCL 点类型的 `normal_x/normal_y/normal_z/curvature`
+字段；不保留输入的 `ring/time` 字段。`curvature` 存储原采样时间偏移（毫秒）。
+点坐标和消息时间戳均对应扫描结束时刻的 LiDAR 坐标系，勿再次去畸变。
+此话题独立于 `publish/scan_publish_en`，IMU 初始化完成且当前帧结果非空后发布。
+点云在去畸变后发布，Odometry 在状态更新后发布；时间戳一致不代表同时到达，
+下游仍需缓存并按时间戳配对。地图初始化等跳帧分支可能只发布点云而不发布 Odometry。
+
+```bash
+rostopic info /cloud_undistorted
+rostopic echo -n 1 /cloud_undistorted/header
+```
+
 ## 4. Rosbag Example
 ### 4.1 Livox Avia Rosbag
 <div align="left">

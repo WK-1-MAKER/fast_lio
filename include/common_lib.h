@@ -7,6 +7,7 @@
 #include <pcl/point_cloud.h>
 #include <fast_lio/Pose6D.h>
 #include <sensor_msgs/Imu.h>
+#include <std_msgs/Header.h>
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_broadcaster.h>
 #include <eigen_conversions/eigen_msg.h>
@@ -61,6 +62,7 @@ struct MeasureGroup     // Lidar data and imu dates for the curent process
     };
     double lidar_beg_time;
     double lidar_end_time;
+    std_msgs::Header lidar_header;
     PointCloudXYZI::Ptr lidar;
     deque<sensor_msgs::Imu::ConstPtr> imu;
 };

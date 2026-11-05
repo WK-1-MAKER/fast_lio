@@ -101,7 +101,7 @@ vector<BoxPointType> cub_needrm;
 vector<PointVector>  Nearest_Points; 
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
-deque<double>                     time_buffer;
+deque<std_msgs::Header>           lidar_header_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
@@ -285,12 +285,14 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
     {
         ROS_ERROR("lidar loop back, clear buffer");
         lidar_buffer.clear();
+        lidar_header_buffer.clear();
+        lidar_pushed = false;
     }
 
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(msg->header.stamp.toSec());
+    lidar_header_buffer.push_back(msg->header);
     last_timestamp_lidar = msg->header.stamp.toSec();
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
@@ -308,6 +310,8 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
     {
         ROS_ERROR("lidar loop back, clear buffer");
         lidar_buffer.clear();
+        lidar_header_buffer.clear();
+        lidar_pushed = false;
     }
     last_timestamp_lidar = msg->header.stamp.toSec();
     
@@ -326,7 +330,7 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(last_timestamp_lidar);
+    lidar_header_buffer.push_back(msg->header);
     
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
@@ -375,7 +379,8 @@ bool sync_packages(MeasureGroup &meas)
     if(!lidar_pushed)
     {
         meas.lidar = lidar_buffer.front();
-        meas.lidar_beg_time = time_buffer.front();
+        meas.lidar_header = lidar_header_buffer.front();
+        meas.lidar_beg_time = meas.lidar_header.stamp.toSec();
 
 
         if (meas.lidar->points.size() <= 1) // time too little
@@ -418,7 +423,7 @@ bool sync_packages(MeasureGroup &meas)
     }
 
     lidar_buffer.pop_front();
-    time_buffer.pop_front();
+    lidar_header_buffer.pop_front();
     lidar_pushed = false;
     return true;
 }
@@ -850,6 +855,8 @@ int main(int argc, char** argv)
             ("/cloud_registered", 100000);
     ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>
             ("/cloud_registered_body", 100000);
+    ros::Publisher pubCloudUndistorted = nh.advertise<sensor_msgs::PointCloud2>
+            ("/cloud_undistorted", 10);
     ros::Publisher pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>
             ("/cloud_effected", 100000);
     ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>
@@ -885,6 +892,8 @@ int main(int argc, char** argv)
             svd_time   = 0;
             t0 = omp_get_wtime();
 
+            // Process can return without output during initialization or without IMU.
+            feats_undistort->clear();
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -894,6 +903,13 @@ int main(int argc, char** argv)
                 ROS_WARN("No point, skip this scan!\n");
                 continue;
             }
+
+            sensor_msgs::PointCloud2 undistorted_msg;
+            pcl::toROSMsg(*feats_undistort, undistorted_msg);
+            // Preserve the input frame, but stamp the scan-end reference used by Odometry.
+            undistorted_msg.header = Measures.lidar_header;
+            undistorted_msg.header.stamp = ros::Time().fromSec(lidar_end_time);
+            pubCloudUndistorted.publish(undistorted_msg);
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;

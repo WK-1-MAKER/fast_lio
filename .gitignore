@@ -8,3 +8,4 @@ Log/*.pdf
 PCD/*.pcd
 src/__pycache__
 src/check_time_offset.py
+docs/
